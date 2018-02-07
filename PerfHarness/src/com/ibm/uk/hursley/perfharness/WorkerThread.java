@@ -52,7 +52,8 @@ public abstract class WorkerThread extends java.lang.Thread {
 
 	protected long startTime = 0; // time thread started iterating (excluding setup time)
 	protected long endTime = 0; // time thread was stopped (excluding shutdown time) 
-
+	protected static int numSessions = 0;
+	
 	private long responseStartTime = 0;
 	private long responseEndTime = 0;
 	private long responseTime = 0;
@@ -133,6 +134,8 @@ public abstract class WorkerThread extends java.lang.Thread {
 
 			if (workerclazz != null)
 				Config.registerAnother(workerclazz);
+			
+		    numSessions = Config.parms.getInt("sn");
 		}
 	}
 
@@ -336,35 +339,39 @@ public abstract class WorkerThread extends java.lang.Thread {
 
 		// As of this point we have entered the performance section
 		// try to keep code to a minimum and, where possible, "unroll"
-		// loops and "pull up" conditional checks 
+		// loops and "pull up" conditional checks
+		
+		//If multiple sessions are required. Avoid overwriting startTime on repeated calls to pace
+		if (numSessions > 1) {
+			if (startTime == 0) {
+				startTime = System.currentTimeMillis();
+			}
+		} else {
+			startTime = System.currentTimeMillis();
+		}
 
-		startTime = System.currentTimeMillis();
-
-
-		do { // this loop is in case we change the rate, we have to break the
-				// whole pacing thing and start again
-
+		do { 
+			// this loop is in case we change the rate, we have to break the
+			// whole pacing thing and start again
 			if (rateUpdated) {
 				rate = this.rate;
 				rateUpdated = false;
 			}
-			
 
-		if (rate == 0) {
-			// We are not trying to fix the rate.
-			if (rampTime>0)
-				Log.logger.warning("Throughput ramping not supported when no expected rate has been set.");
-				while (!shutdown && (!usingMG || totalIterations-- > 0)
-						&& !rateUpdated) {
-				p.oneIteration();
-				if (yieldRate != 0 && totalIterations % yieldRate == 0)
-					Thread.yield();
-			}
+			if (rate == 0) {
+				// We are not trying to fix the rate.
+				if (rampTime>0) {
+					Log.logger.warning("Throughput ramping not supported when no expected rate has been set.");
+				}
+				while (!shutdown && (!usingMG || totalIterations-- > 0) && !rateUpdated) {
+					p.oneIteration();
+					if (yieldRate != 0 && totalIterations % yieldRate == 0) {
+						Thread.yield();
+					}
+				}
 			} else {
 				// throttled operation
-
 				rampTime *= (TIME_PRECISION / 1000);
-
 				double rateI = rate;
 				long rampTimeI = rampTime;
 
@@ -374,63 +381,69 @@ public abstract class WorkerThread extends java.lang.Thread {
 				boolean first = true;
 
 				try {
-
-					while (!shutdown && (!usingMG || totalIterations-- > 0)
-							&& !rateUpdated) {
-
+					while (!shutdown && (!usingMG || totalIterations-- > 0)	&& !rateUpdated) {
 						long before = now();
 
 						// RAMPING CODE
 						if (rampTimeI > 0) {
-
 							rampTimeI = rampTime - (before - ramp_start);
 							if (rampTimeI <= 0) {
 								// Ramping over
 								rateI = rate;
-							Log.logger.finest( "Throughput ramping period (rp) over" );
+								Log.logger.finest("Throughput ramping period (rp) over");
+							} else {
+								rateI = rate * (1d - (double) rampTimeI / rampTime);
+							}
+
+							if (first) {
+								// Since the calculated rate at time 0 is ~0,
+								// the
+								// delay is ~infinity. We counter this by
+								// calculating the exact delay required before
+								// the
+								// (continuous) rate needs to be recalculated.
+								delay = (long) (TIME_PRECISION * Math.sqrt((2 * (rampTime / TIME_PRECISION)) / rate));
+								first = false;
+							} else {
+								// Imagining the rate is a stair graph, we just
+								// pretend
+								// at each moment that the rate is, and always
+								// will be,
+								// flat.
+								delay = (long) (TIME_PRECISION / rateI);
+							}
+						} // end if ramping
+
+						p.oneIteration();
+						if (logarithmic) {
+							doSleep(logarithmicDistribution(delay, delay * 5));
 						} else {
-							rateI = rate * ( 1d - (double)rampTimeI/rampTime );
+							doSleep(delay);
 						}
-
-						if (first) {
-							// Since the calculated rate at time 0 is ~0, the
-							// delay is ~infinity. We counter this by
-							// calculating the exact delay required before the
-							// (continuous) rate needs to be recalculated.
-							delay = (long)(TIME_PRECISION * Math.sqrt((2 * (rampTime/TIME_PRECISION))/rate));
-							first = false;
-						} else {
-							// Imagining the rate is a stair graph, we just pretend
-							// at each moment that the rate is, and always will be,
-							// flat.
-							delay = (long)(TIME_PRECISION / rateI);
+						if (yieldRate != 0 && totalIterations++ % yieldRate == 0) {
+							Thread.yield();
 						}
-					} // end if ramping
-
-					p.oneIteration();
-					if (logarithmic)
-						doSleep(logarithmicDistribution(delay, delay * 5));
-					else
-						doSleep(delay);
-
-					if (yieldRate != 0 && totalIterations++ % yieldRate == 0)
-						Thread.yield();
-				} // end while !shutdown
-				endTime = System.currentTimeMillis();
-			}
-			catch (InterruptedException e) {
-				if (!shutdown)
-					throw e;
-				// else swallowed
-				// This is an expected part of the shutdown sequence 
-			}
-		} // end if throttled operation
+					} // end while !shutdown
+					endTime = System.currentTimeMillis();
+				} catch (InterruptedException e) {
+					if (!shutdown) {
+						throw e;
+					}
+					// else swallowed
+					// This is an expected part of the shutdown sequence
+				}
+			} // end if throttled operation
 
 		} while (!shutdown && (!usingMG || totalIterations-- > 0));
 
 		// As of this point we have finished the performance section
-		if (endTime==0)
+		if (endTime == 0) {
 			endTime = System.currentTimeMillis();
+		}
+		//If Multiple sessions, we will need to overwrite the endTime
+		if (numSessions > 1) {
+			endTime = System.currentTimeMillis();
+		}
 	}
 
 	private static final long now() {

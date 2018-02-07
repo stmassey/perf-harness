@@ -71,6 +71,9 @@ public abstract class JMS11WorkerThread extends WorkerThread {
     protected final int commitCount = Config.parms.getInt("cc");
     protected final int expiry = Config.parms.getInt("ex");
     protected final int priority = Config.parms.getInt("pr");
+    protected final int numSessions = Config.parms.getInt("sn");
+    protected final int sessionInterval = Config.parms.getInt("si");
+    protected final int maxIterations = Config.parms.getInt("mg");
     
     boolean ignoreExceptions = false;
     
@@ -272,76 +275,69 @@ public abstract class JMS11WorkerThread extends WorkerThread {
      * as an asynchronous listener. 
      */
     protected void run( WorkerThread.Paceable paceable, MessageListener listener ) {
-
     	Log.logger.info("START");    	
+    	int sessionCount = 0;
     	
-    	while ( !done && !shutdown ) {
-    	
+    	while (!done && !shutdown) {
 	        try {
-					
 	            // Connect to queuemanager
 	            status = sCONNECTING;
-	                        
 	            buildJMSResources();
-	
 	            status = sRUNNING;
 	
 	            Log.logger.fine( "Entering client loop" );
-
-	            if ( listener!=null ) {
-	            	
+	            if (listener != null) {
         			startTime = System.currentTimeMillis();
 	            	
 	            	// Use onMessage listener
 	            	messageConsumer.setMessageListener(listener);
-	            	
 					waitForShutdownSignal();
-	            	
 	            } else {
 		            // WorkerThread.pace handles all speed limiting etc.
 		            pace( paceable );
 	            }	            
 	            
-	            done = true;
+	            //Session logic only valid if specific number of iterations is provided
+	            if (maxIterations > 0) {
+		            Log.logger.fine("Current session count: " + sessionCount);
 
+		            if (++sessionCount == numSessions) {
+		            	//If weve reached the required number of sessions (numSessions defaults to 1)
+		            	done = true;
+			            Log.logger.fine("Session count completed");
+		            }
+		            if ((numSessions > 1) && (sessionInterval != 0)) {
+			            Log.logger.fine("Session interval; Sleeping for " + sessionInterval + " milliseconds.");
+		            	Thread.sleep(sessionInterval);
+		            }
+	            } else {
+	            	done = true;
+	            }
 	        } catch ( JMSException je ) {
-	        	
 	        	if ( ignoreExceptions ) {
 	        		Log.logger.fine("disconnected?");
-					
 	        	} else {
 	        		handleException( je );
 	        	}
-	        	
 	        } catch (Throwable e) {
-	
 				handleException( e );
 	
 	            // Clear up code carefully in fair weather or foul.	
 	        } finally {
-	        	
-	        	if ( done ) {
-	        		
+	        	if (done) {
 	        		status = (status&sERROR)|sENDING;
-	        		
-	        		if ( endTime==0 ) {
+	        		if (endTime == 0) {
 	        			endTime = System.currentTimeMillis();
 	        		}
-		
 		           	destroyJMSResources(false);
-
 		           	Log.logger.info("STOP");
 		           	status = (status&sERROR)|sENDED;
-		           	
 	        	} else {
 	        		// ! done
 	        		// reconnections++;
 	        	}
-	        	
 	       	} // end trycatch finally
-
     	} // end while !done
-    	
     } // End public void run()
     
 	/**
