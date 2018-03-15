@@ -23,6 +23,7 @@ import com.sun.jndi.toolkit.ctx.AtomicDirContext;
  * overhead of this should be fairly minimal.
  *  
  */
+
 public abstract class WorkerThread extends java.lang.Thread {
 
 	@SuppressWarnings("unused")
